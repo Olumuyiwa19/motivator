@@ -16,7 +16,7 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION")
 MODEL_ID = os.getenv("MODEL_ID")
-#"amazon.nova-micro-v1:0"
+#"amazon.nova-micro-v1:0",   "us.deepseek.r1-v1:0"
 
 # Validate environment variables
 if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]):
@@ -47,11 +47,7 @@ try:
         retries={"max_attempts": 3},  # Add retry mechanism
     )
 
-    bedrock_client = boto3.client(
-        service_name="bedrock-runtime",
-        config=custom_config,
-        region_name=os.getenv("AWS_REGION", "us-east-1"),
-    )
+    client = boto3.client("bedrock-runtime")
 
     # Test connection
     # bedrock_client.list_foundation_models()
@@ -62,32 +58,19 @@ except Exception as e:
     )
 
 # Defining the chatbot's intents and responses
-intent = {
-    "excited": "For God did not give us a spirit of fear, but of power and of love and of a sound mind. - 2 Timothy 1:7",
-    "satisfied": "And whatever you do, do it heartily, as for the Lord rather than for men. - Colossians 3:23",
-    "joyful": "Rejoice in the Lord always. I will say it again: Rejoice! - Philippians 4:4",
-    "proud": "For we are His workmanship, created in Christ Jesus for good works, which God prepared beforehand that we should walk in them. - Ephesians 2:10",
-    "frustrated": "And we know that in all things God works for the good of those who love him, who have been called according to his purpose. - Romans 8:28",
-    "anxious": "Cast your cares on the Lord and he will sustain you; he will never let the righteous be shaken. - Psalm 55:22",
-    "overwhelmed": "Come to me, all you who are weary and burdened, and I will give you rest. - Matthew 11:28",
-    "bored": "And whatever you do, do it heartily, as for the Lord rather than for men. - Colossians 3:23",
-}
-
 intents = {
     "excited":{
-    "bible":["2 Timothy 1:7 - For God did not give us a spirit of fear, but of power and of love and of a sound mind"],
-    "message": "Remember heaven rejoice with you, and the earth be glad"},
+        "bible":["2 Timothy 1:7 - For God did not give us a spirit of fear, but of power and of love and of a sound mind"],
+        "message": "Remember heaven rejoice with you, and the earth be glad"
+        },
     "satisfied":{
         "bible":["Colossians 3:23 - And whatever you do, do it heartily, as for the Lord rather than for men."],
         "message": "And whatever you do, do it heartily, as for the Lord rather"
     }
-    }
+}
 
 # Default response for unspecified emotions
-default_response = "Even though I might not fully understand your current emotion, remember that God is always with you. \nHere's a verse for you: \nTrust in the Lord with all your heart and lean not on your own understanding. - Proverbs 3:5"
-
-# system_traits = "You are an advanced language model capable of detecting subtle emotional nuances in text. Your goal is to identify and understand the emotions conveyed in user statements, and provide relevant guidance The Bible"
-
+#default_response = "Even though I might not fully understand your current emotion, remember that God is always with you. \nHere's a verse for you: \nTrust in the Lord with all your heart and lean not on your own understanding. - Proverbs 3:5"
 
 def generate_conversation(system_prompt, user_message):
     """
@@ -98,11 +81,18 @@ def generate_conversation(system_prompt, user_message):
 
     messages = [{"role": "user", "content": [{"text": combined_message}]}]
 
-    inference_config = {"temperature": 0.5, "maxTokens": 512, "topP": 0.9}
-
+    inf_params = {"temperature": 0.3, "maxTokens": 300, "topP": 0.1}
+    additionalModelRequestFields = {
+    "inferenceConfig": {
+         "topK": 20
+    }
+}
     try:
-        response = bedrock_client.converse(
-            modelId=MODEL_ID, messages=messages, inferenceConfig=inference_config
+        response = client.converse(
+            modelId=MODEL_ID,
+            messages=messages,
+            inferenceConfig=inf_params,
+            additionalModelRequestFields=additionalModelRequestFields
         )
 
         # Log token usage if available
@@ -129,12 +119,11 @@ def get_chatbot_response(user_input):
         return "error", "Please provide some input"
 
     try:
-        # Send request to DeepSeek through Bedrock
+        # Send request to the model through Bedrock
         response = generate_conversation(
             system_prompt=SYSTEM_TRAITS,
             user_message=f"The user says: {user_input}",
         )
-
 
         if not response or "output" not in response:
             return "error", "Received invalid response from model"
@@ -143,15 +132,58 @@ def get_chatbot_response(user_input):
         ai_response = response["output"]["message"]["content"][0]["text"]
 
 
-        # Use regex to extract the JSON content
-        match = re.search(r'```json\s*(\{.*?\})\s*```', ai_response, re.DOTALL)
-        if match:
-            json_str = match.group(1)
-            ai_response = json.loads(json_str)
-        else:
-            logger.warning("No valid JSON found in response.")
+        # Try multiple patterns to extract JSON content
+        json_patterns = [
+            r'```json\s*(\{.*?\})\s*```',  # JSON in code blocks
+            r'(\{(?:"[^"]*"\s*:\s*\{[^}]*\}(?:,|))*\})',  # Direct JSON object
+            r'(\{.*\})'  # Any JSON-like structure (fallback)
+        ]
 
-            return "error", "Invalid response format", "Please try again"
+        parsed_json = None
+        for pattern in json_patterns:
+            match = re.search(pattern, ai_response, re.DOTALL)
+            if match:
+                try:
+                    json_str = match.group(1)
+                    parsed_json = json.loads(json_str)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+        if parsed_json:
+            ai_response = parsed_json
+        else:
+            # If no JSON found, try to create a simple JSON structure from the text
+            try:
+                # Look for emotion keywords in the response
+                emotion_keywords = ["excited", "satisfied", "joyful", "proud",
+                                   "frustrated", "anxious", "overwhelmed", "bored",
+                                   "happy", "sad", "angry", "fearful", "hopeful"]
+
+                found_emotion = None
+                for emotion in emotion_keywords:
+                    if emotion.lower() in ai_response.lower():
+                        found_emotion = emotion
+                        break
+
+                if not found_emotion:
+                    found_emotion = "unspecified"
+
+                # Extract Bible verse if present (looking for common Bible verse patterns)
+                bible_match = re.search(r'([1-3]?\s*\w+\s+\d+:\d+(?:-\d+)?)\s*[-–]\s*([^"]*)', ai_response)
+                bible_verse = bible_match.group(0) if bible_match else "Proverbs 3:5 - Trust in the Lord with all your heart"
+
+                # Create a simple JSON structure
+                ai_response = {
+                    found_emotion: {
+                        "Bible": [bible_verse],
+                        "Message": ai_response[:100]  # Use first 100 chars as message
+                    }
+                }
+                logger.info(f"Created fallback JSON structure with emotion: {found_emotion}")
+            except Exception as e:
+                logger.warning(f"Failed to parse response: {e}")
+                return "error", "Invalid response format", "Please try again"
 
         ai_emotions = ', '.join(ai_response.keys())
 
@@ -161,18 +193,20 @@ def get_chatbot_response(user_input):
             emotion for emotion in intents if emotion in ai_emotions
         ]
         if captured_intent_input:
-
-            bibleVerse=intents[captured_intent_input[0]]['Bible'][0]
+            bibleVerse = intents[captured_intent_input[0]]['Bible'][0]
             message = intents[captured_intent_input[0]]['Message']
 
             # Return the first detected emotion and its corresponding verse
             return captured_intent_input[0], bibleVerse, message
         else:
             # If no emotion is detected, return a default response
-            #return None, default_response
             first_emotion = next(iter(ai_response))
-            bibleVerse=ai_response[first_emotion]['Bible'][0]
-            message = ai_response[first_emotion]['Message']
+            # Fix case sensitivity in key names
+            bible_key = next((k for k in ai_response[first_emotion].keys() if k.lower() == "bible"), "Bible")
+            message_key = next((k for k in ai_response[first_emotion].keys() if k.lower() == "message"), "Message")
+
+            bibleVerse = ai_response[first_emotion][bible_key][0] if isinstance(ai_response[first_emotion][bible_key], list) else ai_response[first_emotion][bible_key]
+            message = ai_response[first_emotion][message_key]
             return first_emotion, bibleVerse, message
 
     except Exception as e:
@@ -215,35 +249,43 @@ if st.button("Get Bible Verse"):
             if message:
                 st.info(message)
 
-        #st.session_state["submitted"] = True  # Mark as submitted
-
     else:
         st.warning("Please enter your feeling to receive a Bible verse.")
 
-# Show the option to share another feeling only after the first submission
+# Show the option to share feedback after submission
 if st.session_state["submitted"]:
     feedback = st.radio(
         "Do you feel encouraged by this response?",
-        ("Yes", "No"),
+        options=("Select an option", "Yes", "No"),
         key="feedback_key",
+        index=0, # Default index to first option"
     )
-    if feedback == "No":
+
+    if feedback == "Yes":
+        st.success("Thank you for your feedback! We are glad to hear that you feel encouraged.")
+        st.session_state["resources_key"] = True
+
+    elif feedback == "No":
         resources_response = st.radio(
             "Would you like to see other helpful resources?",
-            ("Yes", "No"),
-            key="resources_radio"
+            options=("Select an option", "Yes", "No"),
+            key="resources_radio",
         )
 
         if resources_response == "Yes":
-            st.markdown("""
-                ### Helpful Resources
-                - [Bible Gateway](https://www.biblegateway.com/)
-                - [YouVersion Bible App](https://www.youversion.com/the-bible-app/)
-                - [Faith-based Counseling Services](https://www.psychologytoday.com/us/therapists/religious-spirituality)
-            """)
+            # Only show resources when user explicitly asks for them
+            show_resources = st.button("View Resources")
+            if show_resources:
+                st.markdown("""
+                    ### Helpful Resources
+                    - [Bible Gateway](https://www.biblegateway.com/)
+                    - [YouVersion Bible App](https://www.youversion.com/the-bible-app/)
+                    - [Faith-based Counseling Services](https://www.psychologytoday.com/us/therapists/religious-spirituality)
+                    - [Christian Meditation and Mindfulness](https://www.christianmeditation.com/)
+                """)
 
-            if st.button("Start Over"):
-                st.session_state["submitted"] = False
+                if st.button("Start Over"):
+                    st.session_state["submitted"] = False
         else:
             st.write("Thank you for chatting. May you have a blessed day!")
             if st.button("Start New Conversation"):
