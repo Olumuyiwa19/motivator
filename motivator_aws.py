@@ -205,7 +205,7 @@ def get_chatbot_response(user_input):
             bible_key = next((k for k in ai_response[first_emotion].keys() if k.lower() == "bible"), "Bible")
             message_key = next((k for k in ai_response[first_emotion].keys() if k.lower() == "message"), "Message")
 
-            bibleVerse = ai_response[first_emotion][bible_key][0] if isinstance(ai_response[first_emotion][bible_key], list) else ai_response[first_emotion][bible_key]
+            bibleVerse = ai_response[first_emotion][bible_key][0] #if isinstance(ai_response[first_emotion][bible_key], list) else ai_response[first_emotion][bible_key]
             message = ai_response[first_emotion][message_key]
             return first_emotion, bibleVerse, message
 
@@ -270,6 +270,7 @@ if st.session_state["submitted"]:
             "Would you like to see other helpful resources?",
             options=("Select an option", "Yes", "No"),
             key="resources_radio",
+            index=0, # Default index to first option"
         )
 
         if resources_response == "Yes":
@@ -286,7 +287,10 @@ if st.session_state["submitted"]:
 
                 if st.button("Start Over"):
                     st.session_state["submitted"] = False
-        else:
+                    st.session_state["resources_key"] = False
+                    st.rerun()
+
+        elif resources_response == "No":
             st.write("Thank you for chatting. May you have a blessed day!")
             if st.button("Start New Conversation"):
                 st.session_state["submitted"] = False
